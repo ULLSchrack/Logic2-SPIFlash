@@ -16,18 +16,20 @@ DUAL_CONTINUE_COMMANDS = {
     0xbb: 0,
 }
 
-DATA_COMMANDS = {0x03: "Read",
-                 0x0b: "Fast Read",
-                 0x5b: "Read SFDP",
-                 0x6b: "Quad-Output Fast Read",
-                 0x9e: "Read JEDEC ID",
-                 0x9f: "Read JEDEC ID",
-                 0xe7: "Quad Word Read",
-                 0xeb: "Quad Read",
-                 0x02: "Page Program",
-                 0x32: "Quad Page Program",
-                 0x3b: "Dual Read Output",
-                 0xbb: "Dual Read I/O"}
+DATA_COMMANDS = {
+    0x03: "Read",
+    0x0b: "Fast Read",
+    0x5b: "Read SFDP",
+    0x6b: "Quad-Output Fast Read",
+    0x9e: "Read JEDEC ID",
+    0x9f: "Read JEDEC ID",
+    0xe7: "Quad Word Read",
+    0xeb: "Quad Read",
+    0x02: "Page Program",
+    0x32: "Quad Page Program",
+    0x3b: "Dual Read Output",
+    0xbb: "Dual Read I/O",
+}
 
 EN4B = 0xB7
 EX4B = 0xE9
@@ -41,7 +43,9 @@ CONTROL_COMMANDS = {
     0x75: "Program Suspend",
     0xAB: "Release Power-down / Device ID",
     EN4B: "Enable 4 Byte Address",
-    EX4B: "Exit 4 Byte Address"
+    0xC5: "Write Extended Address Register",
+    EX4B: "Exit 4 Byte Address",
+    0xD8: "Block Erase",
 }
 
 class FakeFrame:
@@ -64,13 +68,13 @@ class SPIFlash(HighLevelAnalyzer):
             'format': 'Error!'
         },
         'control_command': {
-            'format': '{{data.command}}'
+            'format': '{{data.command}} {{data.value}}'
         },
         'data_command': {
             'format': '{{data.command}} 0x{{data.address}}'
         },
         'data': {
-            'format': '{{data.num_bytes}} data bytes (to 0x{{data.address_end}})'
+            'format': '{{data.command}}: {{data.num_bytes}} data bytes (to 0x{{data.address_end}})'
         }
     }
 
@@ -118,7 +122,7 @@ class SPIFlash(HighLevelAnalyzer):
 
         # Support getting data from a Simple Parallel and converting it.
         frames = []
-        if frame.type == "data":
+        if frame.type == "data":    # Simple Parallel
             reset_cs = False
             data = frame.data["data"]
             if "index" in frame.data:
@@ -216,8 +220,8 @@ class SPIFlash(HighLevelAnalyzer):
                     self._quad_data = 0
 
             self._clock_count += 1
-        else:
-            print("non data!")
+        else:   # SPI
+            # print("non data!")
             frames = [frame]
 
         output = None
@@ -256,8 +260,9 @@ class SPIFlash(HighLevelAnalyzer):
                 if not self._miso_data or not self._mosi_data:
                     continue
                 command = self._mosi_data[0]
-                frame_data["command"] = command
+                print("disable: {}".format(command))
                 if command in DATA_COMMANDS:
+                    frame_data["command"] = DATA_COMMANDS[command]
                     if len(self._mosi_data) < 1 + int(self._address_bytes):
                         frame_type = "error"
                     else:
@@ -279,9 +284,13 @@ class SPIFlash(HighLevelAnalyzer):
                 else:
                     if command in CONTROL_COMMANDS:
                         frame_data["command"] = CONTROL_COMMANDS[command]
+                        if len(self._mosi_data) > 1:
+                            frame_data["value"] = self._mosi_data[1]
+                        else:
+                            frame_data["value"] = -1
                     else:
                         # Unrecognized commands are printed in hexadecimal
-                        frame_data["command"] = ''.join([ '0x', hex(command).upper()[2:] ])
+                        frame_data["command"] = ''.join(['0x', hex(command).upper()[2:] ])
                     if command == EN4B:
                         self._address_bytes = 4
                         self._address_format = "{:0" + str(2*int(self._address_bytes)) + "x}"
@@ -295,11 +304,13 @@ class SPIFlash(HighLevelAnalyzer):
                 self._mosi_data = None
             our_frame = None
             if frame_type:
+                print("{}: start: {}, end: {}".format(frame_type, self._start_time, fake_frame.end_time))
                 our_frame = AnalyzerFrame(frame_type,
                                           self._start_time,
                                           fake_frame.end_time,
                                           frame_data)
-                self._start_time = fake_frame.start_time
+                self._start_time = fake_frame.end_time
+
             if self.decode_level == 'Only Data' and frame_type == "control_command":
                 continue
             if self.decode_level == 'Only Errors' and frame_type != "error":
